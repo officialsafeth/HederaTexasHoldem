@@ -1,0 +1,102 @@
+pragma solidity ^0.8.0;
+
+contract PokerGame {
+    enum HandRank { HighCard, Pair, TwoPair, ThreeOfAKind, Straight, Flush, FullHouse, FourOfAKind, StraightFlush }
+
+    struct Player {
+        uint256 id;
+        uint256 betAmount;
+        uint8[2] holeCards;
+        uint256 treasuryContribution;
+        bool isActive;
+    }
+
+    struct Treasury {
+        uint256 balance;
+    }
+
+    uint256 public minBetAmount;
+    uint8[5] public communityCards;
+    uint8 public communityCardCount;
+    mapping(address => Player) public players;
+    address payable[] public playerAddresses;
+    address payable public dealer;
+    Treasury public treasury;
+
+    event BetPlaced(address indexed player, uint256 amount);
+    event CommunityCardsDealt(uint8[] cards);
+    event WinnerDeclared(address indexed player, HandRank handRank, uint256 winningsClaimed);
+    event TreasuryUpdated(uint256 amount);
+
+    constructor(uint256 _minBetAmount) {
+        minBetAmount = _minBetAmount;
+        dealer = payable(msg.sender);
+    }
+
+    modifier onlyDealer() {
+        require(msg.sender == dealer, "Only the dealer can perform this action");
+        _;
+    }
+
+    function placeBet() external payable {
+        require(msg.value >= minBetAmount, "Bet amount is below the minimum requirement");
+
+        Player storage player = players[msg.sender];
+        if (player.id == 0) {
+            playerAddresses.push(payable(msg.sender));
+            player.id = playerAddresses.length;
+        }
+        player.betAmount += msg.value;
+        player.isActive = true;
+
+        emit BetPlaced(msg.sender, msg.value);
+    }
+
+    function dealHoleCards(uint8[2] memory cards) external onlyDealer {
+        require(communityCardCount == 0, "Hole cards can only be dealt before community cards");
+
+        Player storage player = players[msg.sender];
+        require(player.isActive, "Player does not exist or is inactive");
+
+        player.holeCards = cards;
+    }
+
+    function dealCommunityCards(uint8[5] memory cards) external onlyDealer {
+        require(communityCardCount < 5, "All community cards have already been dealt");
+
+        for (uint8 i = 0; i < cards.length; i++) {
+            communityCards[communityCardCount + i] = cards[i];
+        }
+
+        communityCardCount += uint8(cards.length);
+
+        emit CommunityCardsDealt(cards);
+    }
+
+    function declareWinner(address payable playerAddress) external onlyDealer {
+        Player storage winner = players[playerAddress];
+        require(winner.isActive, "Winner does not exist or is inactive");
+
+        HandRank winnerHandRank = evaluateHand(winner.holeCards, communityCards, communityCardCount);
+
+        uint256 winnings = calculateWinnings(winnerAddress);
+        emit WinnerDeclared(winnerAddress, winnerHandRank, winnings);
+
+        // Distribute winnings from other players to the winner
+        for (uint256 i = 0; i < playerAddresses.length; i++) {
+            address payable player = playerAddresses[i];
+            if (player != winnerAddress) {
+                Player storage otherPlayer = players[player];
+                if (otherPlayer.isActive) {
+                    uint256 contribution = calculateContribution(otherPlayer, winnings);
+                    otherPlayer.treasuryContribution += contribution;
+                    winnings -= contribution;
+                }
+            }
+        }
+
+        winner.wallet.transfer(winnings);
+        resetGame(winnerAddress);
+    }
+
+    function calculateWinnings(address payable winnerAddress) private view returns (
